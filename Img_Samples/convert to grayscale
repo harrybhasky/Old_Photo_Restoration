@@ -1,0 +1,23 @@
+%% Image Preprocessing and Grayscale Conversion
+clc; clear; close all;
+
+% Read the input image
+img = imread('testimg5.jpg');
+
+% Optional: resize for consistency
+img = imresize(img, [512 512]);
+
+% Convert to double precision [0,1] for processing
+img = im2double(img);
+
+% Convert to grayscale (handle color/grayscale automatically)
+if size(img, 3) == 3
+    gray = rgb2gray(img);
+else
+    gray = img;
+end
+
+% Display both
+figure;
+imshowpair(img, gray, 'montage');
+title('Original (Left) vs Grayscale (Right)');
