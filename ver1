@@ -1,6 +1,6 @@
 %% --- Image Restoration Pipeline //// 
 % Team Past Pixels
-% K Hari Bhaskaran, Rohit R, Vedant Suhas Rane ---
+% K Hari Bhaskaran, Rohit R, Vedant Suhas Rane  ---
 clc; 
 clear; 
 close all;
