@@ -1,0 +1,180 @@
+%% --- Image Restoration Pipeline //// 
+% Team Past Pixels
+% K Hari Bhaskaran, Rohit R, Vedant Suhas Rane ---
+clc; 
+clear; 
+close all;
+
+% --- Load Image ---
+try
+    % Use the filename of your image
+    img_orig = imread('testimg4.jpg'); 
+catch
+    fprintf('Error: Image file not found. Please check the filename.\n');
+    return;
+end
+
+fprintf('--- Starting Restoration Pipeline ---\n\n');
+
+
+%% =========================================================================
+%  STAGE 1: General Noise Reduction (NEW FIRST STEP)
+%  Goal: Reduce fine-grained noise *before* it gets amplified by contrast.
+%  Filter: Wiener Filter (wiener2)
+% ==========================================================================
+fprintf('--- STAGE 1: General Noise Reduction ---\n');
+
+% We apply the Wiener filter to the L-channel to preserve color
+lab_img = rgb2lab(img_orig);
+L_channel = lab_img(:,:,1);
+
+% Normalize L-channel [0,100] to [0,1] for wiener2
+L_norm = L_channel / 100;
+
+% Apply wiener2. [5 5] is a good neighborhood size to start with.
+fprintf('  Applying 5x5 Wiener filter to Lightness channel...\n');
+L_cleaned = wiener2(L_norm, [5 5]);
+
+% Put the cleaned, denormalized L-channel back
+lab_img(:,:,1) = L_cleaned * 100;
+img_stage1 = lab2rgb(lab_img);
+
+% Display Stage 1 Result
+figure;
+imshowpair(img_orig, img_stage1, 'montage');
+title('Stage 1: Before (Left) vs. After General Noise Reduction (Right)');
+
+
+%% =========================================================================
+%  STAGE 2: Tonal & Color Correction (FORMERLY STAGE 1)
+%  Goal: Now that the image is cleaner, safely boost contrast.
+% ==========================================================================
+fprintf('\n--- STAGE 2: Tonal & Color Correction ---\n');
+
+% --- Part A: Contrast Correction (on the cleaned image) ---
+lab_img = rgb2lab(img_stage1); % Use output from Stage 1
+L_channel = lab_img(:,:,1);
+a_channel = lab_img(:,:,2);
+b_channel = lab_img(:,:,3);
+
+% Parameter Check: Standard Deviation of Lightness
+std_L = std(L_channel(:));
+fprintf('  Std Dev of Cleaned Lightness: %.2f\n', std_L);
+
+if std_L < 50 % This threshold may still be valid
+    fprintf('  Applying GENTLE CLAHE to Lightness channel...\n');
+    L_norm = L_channel / 100; 
+    
+    % *** MODIFICATION: Using a much gentler ClipLimit ***
+    % This prevents over-amplifying any remaining noise.
+    L_enhanced = adapthisteq(L_norm, 'ClipLimit', 0.005); % Was 0.015
+    
+    lab_img(:,:,1) = L_enhanced * 100;
+else
+    fprintf('  Sufficient contrast detected. Skipping CLAHE.\n');
+end
+
+% --- Part B: Color Cast Check & Correction (Same as before) ---
+mean_a = mean(a_channel(:));
+mean_b = mean(b_channel(:));
+fprintf('  Mean ''a'' (Green/Red) Cast: %.2f\n', mean_a);
+fprintf('  Mean ''b'' (Blue/Yellow) Cast: %.2f\n', mean_b);
+
+color_cast_threshold = 5.0; 
+if abs(mean_a) > color_cast_threshold || abs(mean_b) > color_cast_threshold
+    fprintf('  Neutralizing significant color cast...\n');
+    lab_img(:,:,2) = a_channel - mean_a;
+    lab_img(:,:,3) = b_channel - mean_b;
+else
+    fprintf('  Color cast is minimal. Preserving original color.\n');
+end
+
+% --- Convert back to RGB ---
+img_stage2 = lab2rgb(lab_img);
+
+% Display Stage 2 Result
+figure;
+imshowpair(img_stage1, img_stage2, 'montage');
+title('Stage 2: Before (Left) vs. After Tonal & Color Correction (Right)');
+
+
+%% =========================================================================
+%  STAGE 3: Fine Scratch & Noise Reduction (FORMERLY STAGE 2)
+%  Goal: Remove salt-and-pepper style scratches, which are now clearer.
+% ==========================================================================
+fprintf('\n--- STAGE 3: Fine Scratch Reduction ---\n');
+
+% Parameter Check: "Salt" Noise Ratio
+% Use a grayscale version of the STAGE 2 output
+img_gray_s2 = rgb2gray(img_stage2); 
+
+% Check percentage of bright pixels (scratches)
+salt_ratio = sum(img_gray_s2(:) > 250) / numel(img_gray_s2);
+fprintf('  Bright Scratch Ratio (Pixels > 250): %.2f%%\n', salt_ratio * 100);
+
+img_stage3 = img_stage2; % Initialize stage 3 image
+
+% Filter Decision: Apply Median Filter
+if salt_ratio > 0.005 % If > 0.5% of pixels are bright scratches
+    fprintf('  Applying 3x3 Median Filter...\n');
+    img_stage3(:,:,1) = medfilt2(img_stage2(:,:,1), [3 3]);
+    img_stage3(:,:,2) = medfilt2(img_stage2(:,:,2), [3 3]);
+    img_stage3(:,:,3) = medfilt2(img_stage2(:,:,3), [3 3]);
+else
+    fprintf('  Minimal fine scratches detected. Skipping Median Filter.\n');
+end
+
+% Display Stage 3 Result
+figure;
+imshowpair(img_stage2, img_stage3, 'montage');
+title('Stage 3: Before (Left) vs. After Fine Scratch Reduction (Right)');
+
+
+%% =========================================================================
+%  STAGE 4: Large Damage Inpainting (FORMERLY STAGE 3)
+%  Goal: Detect and fill large tears and missing pieces.
+% ==========================================================================
+fprintf('\n--- STAGE 4: Large Damage Inpainting ---\n');
+
+% Parameter Check: Create Damage Mask from the cleanest image so far
+img_gray_s3 = rgb2gray(img_stage3); 
+
+% Mask detection logic (same as before)
+mask_white = imbinarize(img_gray_s3, 'adaptive', 'Sensitivity', 0.6);
+mask_edges = edge(img_gray_s3, 'canny', [0.05 0.2]);
+damage_mask = mask_white | mask_edges;
+damage_mask = imdilate(damage_mask, strel('disk', 2));
+damage_mask = imfill(damage_mask, 'holes');
+damage_mask = bwareaopen(damage_mask, 50);
+
+figure; 
+imshow(damage_mask); 
+title('Stage 4: Detected Damage Mask');
+
+damage_pct = 100 * sum(damage_mask(:)) / numel(damage_mask);
+fprintf('  Large Damage Mask Area: %.2f%%\n', damage_pct);
+
+img_stage4 = img_stage3; % Initialize stage 4 image
+
+% Filter Decision: Apply Inpainting
+if damage_pct > 0.3 && damage_pct < 25
+    fprintf('  Applying Exemplar-Based Inpainting (this may take time)...\n');
+    img_stage4 = inpaintExemplar(img_stage3, damage_mask, 'PatchSize', 9);
+else
+    fprintf('  Damage area is too large or minimal. Skipping automated inpainting.\n');
+end
+
+% Display Stage 4 Result
+figure;
+imshowpair(img_stage3, img_stage4, 'montage');
+title('Stage 4: Before (Left) vs. After Inpainting (Right)');
+
+
+%% =========================================================================
+%  FINAL RESULT
+% ==========================================================================
+fprintf('\n--- Restoration Pipeline Complete ---\n');
+
+figure;
+imshowpair(img_orig, img_stage4, 'montage');
+title('Final Result: Original (Left) vs. Restored (Right)');
